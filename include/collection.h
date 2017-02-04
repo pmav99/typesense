@@ -96,7 +96,7 @@ public:
     void remove(std::string id);
 
     void score_results(Topster<100> &topster, const int & token_rank, const std::vector<art_leaf *> &query_suggestion,
-                       const uint32_t *result_ids, const size_t result_size) const;
+                       const Roaring & result_ids, const size_t result_size) const;
 
     enum {MAX_SEARCH_TOKENS = 20};
     enum {MAX_RESULTS = 100};

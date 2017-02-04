@@ -5,6 +5,7 @@
 #include <intersection.h>
 #include <match_score.h>
 #include <string_utils.h>
+#include <art.h>
 
 Collection::Collection(const std::string name, const uint32_t collection_id, const uint32_t next_seq_id, Store *store,
                        const std::vector<field> &search_fields, const std::vector<std::string> rank_fields):
@@ -88,7 +89,7 @@ void Collection::index_int32_field(const int32_t value, uint32_t score, art_tree
     uint32_t num_hits = 0;
     art_leaf* leaf = (art_leaf *) art_search(t, key, KEY_LEN);
     if(leaf != NULL) {
-        num_hits = leaf->values->ids.getLength();
+        num_hits = leaf->values->ids.cardinality();
     }
 
     num_hits += 1;
@@ -111,7 +112,7 @@ void Collection::index_int64_field(const int64_t value, uint32_t score, art_tree
     uint32_t num_hits = 0;
     art_leaf* leaf = (art_leaf *) art_search(t, key, KEY_LEN);
     if(leaf != NULL) {
-        num_hits = leaf->values->ids.getLength();
+        num_hits = leaf->values->ids.cardinality();
     }
 
     num_hits += 1;
@@ -150,7 +151,7 @@ void Collection::index_string_field(const std::string & text, const uint32_t sco
 
         art_leaf* leaf = (art_leaf *) art_search(t, key, key_len);
         if(leaf != NULL) {
-            num_hits = leaf->values->ids.getLength();
+            num_hits = leaf->values->ids.cardinality();
         }
 
         num_hits += 1;
@@ -203,26 +204,21 @@ void Collection::search_candidates(int & token_rank, std::vector<std::vector<art
         std::cout << std::endl;*/
 
         // initialize results with the starting element (for further intersection)
-        uint32_t* result_ids = query_suggestion[0]->values->ids.uncompress();
-        size_t result_size = query_suggestion[0]->values->ids.getLength();
+        Roaring init_ids = query_suggestion[0]->values->ids;
+        if(init_ids.cardinality() == 0) continue;
 
-        if(result_size == 0) continue;
+        Roaring & result_ids = init_ids;
 
         // intersect the document ids for each token to find docs that contain all the tokens (stored in `result_ids`)
         for(auto i=1; i < query_suggestion.size(); i++) {
-            uint32_t* out = new uint32_t[result_size];
-            uint32_t* curr = query_suggestion[i]->values->ids.uncompress();
-            result_size = Intersection::scalar(result_ids, result_size, curr, query_suggestion[i]->values->ids.getLength(), out);
-            delete[] result_ids;
-            delete[] curr;
-            result_ids = out;
+            Roaring & curr = query_suggestion[i]->values->ids;
+            result_ids = result_ids & curr;
         }
 
         // go through each matching document id and calculate match score
-        score_results(topster, token_rank, query_suggestion, result_ids, result_size);
-        delete[] result_ids;
+        score_results(topster, token_rank, query_suggestion, result_ids, result_ids.cardinality());
 
-        num_found += result_size;
+        num_found += result_ids.cardinality();
         total_results += topster.size;
 
         if(total_results >= max_results) {
@@ -376,7 +372,7 @@ void Collection::search(std::string & query, const std::string & field, const in
             if(!leaves.empty()) {
                 //!log_leaves(costs[token_index], token, leaves);
                 token_leaves.push_back(leaves);
-                token_to_count[token] = leaves.at(0)->values->ids.getLength();
+                token_to_count[token] = leaves.at(0)->values->ids.cardinality();
             } else {
                 // No result at `cost = costs[token_index]` => remove cost for token and re-do combinations
                 auto it = std::find(token_to_costs[token_index].begin(), token_to_costs[token_index].end(), costs[token_index]);
@@ -444,21 +440,23 @@ void Collection::log_leaves(const int cost, const std::string &token, const std:
     printf("Token: %s, cost: %d, candidates: \n", token.c_str(), cost);
     for(auto i=0; i < leaves.size(); i++) {
         printf("%.*s, ", leaves[i]->key_len, leaves[i]->key);
-        printf("frequency: %d, max_score: %d\n", leaves[i]->values->ids.getLength(), leaves[i]->max_score);
-        /*for(auto j=0; j<leaves[i]->values->ids.getLength(); j++) {
+        printf("frequency: %lu, max_score: %d\n", (unsigned long) leaves[i]->values->ids.cardinality(), leaves[i]->max_score);
+        /*for(auto j=0; j<leaves[i]->values->ids.cardinality(); j++) {
             printf("id: %d\n", leaves[i]->values->ids.at(j));
         }*/
     }
 }
 
 void Collection::score_results(Topster<100> &topster, const int & token_rank,
-                               const std::vector<art_leaf *> &query_suggestion, const uint32_t *result_ids,
+                               const std::vector<art_leaf *> &query_suggestion, const Roaring & result_ids,
                                const size_t result_size) const {
 
     const int max_token_rank = 250;
 
     for(auto i=0; i<result_size; i++) {
-        uint32_t seq_id = result_ids[i];
+        uint32_t seq_id;
+        result_ids.select(i, &seq_id);
+
         std::vector<std::vector<uint16_t>> token_positions;
 
         MatchScore mscore;
@@ -467,11 +465,14 @@ void Collection::score_results(Topster<100> &topster, const int & token_rank,
             mscore = MatchScore{1, 1};
         } else {
             // for each token in the query, find the positions that it appears in this document
-            for (art_leaf *token_leaf : query_suggestion) {
+            for (const art_leaf *token_leaf : query_suggestion) {
+                //std::cout << "token_leaf: " << token_leaf->key << std::endl;
                 std::vector<uint16_t> positions;
-                uint32_t doc_index = token_leaf->values->ids.indexOf(seq_id);
+                bool contained = token_leaf->values->ids.contains(seq_id);
+                uint32_t doc_index = token_leaf->values->ids.rank(seq_id) - 1;
                 uint32_t start_offset = token_leaf->values->offset_index.at(doc_index);
-                uint32_t end_offset = (doc_index == token_leaf->values->ids.getLength() - 1) ?
+
+                uint32_t end_offset = (doc_index == token_leaf->values->ids.cardinality() - 1) ?
                                       token_leaf->values->offsets.getLength() :
                                       token_leaf->values->offset_index.at(doc_index+1);
 
@@ -496,8 +497,9 @@ void Collection::score_results(Topster<100> &topster, const int & token_rank,
         int64_t primary_rank_score = primary_rank_scores.count(seq_id) > 0 ? primary_rank_scores.at(seq_id) : 0;
         int64_t secondary_rank_score = secondary_rank_scores.count(seq_id) > 0 ? secondary_rank_scores.at(seq_id) : 0;
         topster.add(seq_id, match_score, primary_rank_score, secondary_rank_score);
-        /*std::cout << "token_rank_score: " << token_rank_score << ", match_score: "
-                  << match_score << ", primary_rank_score: " << primary_rank_score << ", seq_id: " << seq_id << std::endl;*/
+        /*std::cout << "token_rank_score: " << token_rank_score << ", word_present: " << (int) mscore.words_present
+                  << ", mscore.distance: " << mscore.distance << ", match_score: " << match_score
+                  << ", primary_rank_score: " << primary_rank_score << ", seq_id: " << seq_id << std::endl;*/
     }
 }
 
@@ -514,7 +516,7 @@ inline std::vector<art_leaf *> Collection::next_suggestion(const std::vector<std
 
     // sort ascending based on matched documents for each token for faster intersection
     sort(query_suggestion.begin(), query_suggestion.end(), [](const art_leaf* left, const art_leaf* right) {
-        return left->values->ids.getLength() < right->values->ids.getLength();
+        return left->values->ids.cardinality() < right->values->ids.cardinality();
     });
 
     return query_suggestion;
@@ -574,19 +576,9 @@ void Collection::remove(std::string id) {
 
         art_leaf* leaf = (art_leaf *) art_search(index_map.at("title"), key, key_len);
         if(leaf != NULL) {
-            uint32_t seq_id_values[1] = {seq_id};
-
-            uint32_t doc_index = leaf->values->ids.indexOf(seq_id);
-
-            /*
-            auto len = leaf->values->offset_index.getLength();
-            for(auto i=0; i<len; i++) {
-                std::cout << "i: " << i << ", val: " << leaf->values->offset_index.at(i) << std::endl;
-            }
-            std::cout << "----" << std::endl;
-            */
+            uint32_t doc_index = leaf->values->ids.rank(seq_id) - 1;
             uint32_t start_offset = leaf->values->offset_index.at(doc_index);
-            uint32_t end_offset = (doc_index == leaf->values->ids.getLength() - 1) ?
+            uint32_t end_offset = (doc_index == leaf->values->ids.cardinality() - 1) ?
                                   leaf->values->offsets.getLength() :
                                   leaf->values->offset_index.at(doc_index+1);
 
@@ -594,15 +586,9 @@ void Collection::remove(std::string id) {
             _remove_and_shift_offset_index(leaf->values->offset_index, doc_indices, 1);
 
             leaf->values->offsets.remove_index_unsorted(start_offset, end_offset);
-            leaf->values->ids.remove_values_sorted(seq_id_values, 1);
+            leaf->values->ids.remove(seq_id);
 
-            /*len = leaf->values->offset_index.getLength();
-            for(auto i=0; i<len; i++) {
-                std::cout << "i: " << i << ", val: " << leaf->values->offset_index.at(i) << std::endl;
-            }
-            std::cout << "----" << std::endl;*/
-
-            if(leaf->values->ids.getLength() == 0) {
+            if(leaf->values->ids.cardinality() == 0) {
                 art_delete(index_map.at("title"), key, key_len);
             }
         }

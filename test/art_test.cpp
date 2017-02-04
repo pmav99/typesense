@@ -5,6 +5,7 @@
 #include <cmath>
 #include <gtest/gtest.h>
 #include <art.h>
+#include "roaring.hh"
 
 art_document get_document(uint32_t id) {
     art_document document;
@@ -14,6 +15,12 @@ art_document get_document(uint32_t id) {
     document.offsets_len = 1;
 
     return document;
+}
+
+uint32_t _at(Roaring &r, uint32_t index) {
+    uint32_t ele;
+    r.select(index, &ele);
+    return ele;
 }
 
 TEST(ArtTest, test_art_init_and_destroy) {
@@ -137,7 +144,7 @@ TEST(ArtTest, test_art_insert_search) {
         buf[len-1] = '\0';
 
         art_leaf* l = (art_leaf *) art_search(&t, (unsigned char*)buf, len);
-        EXPECT_EQ(line, l->values->ids.at(0));
+        EXPECT_EQ(line, _at(l->values->ids, 0));
         line++;
     }
 
@@ -186,11 +193,11 @@ TEST(ArtTest, test_art_insert_delete) {
         // Search first, ensure all entries still
         // visible
         art_leaf* l = (art_leaf *) art_search(&t, (unsigned char*)buf, len);
-        EXPECT_EQ(line, l->values->ids.at(0));
+        EXPECT_EQ(line, _at(l->values->ids, 0));
 
         // Delete, should get lineno back
         art_values* values = (art_values*)art_delete(&t, (unsigned char*)buf, len);
-        EXPECT_EQ(line, values->ids.at(0));
+        EXPECT_EQ(line, _at(values->ids, 0));
         free(values);
 
         // Check the size
@@ -209,7 +216,7 @@ TEST(ArtTest, test_art_insert_delete) {
 
 int iter_cb(void *data, const unsigned char* key, uint32_t key_len, void *val) {
     uint64_t *out = (uint64_t*)data;
-    uintptr_t line = ((art_values*)val)->ids.at(0);
+    uintptr_t line = _at(((art_values*)val)->ids, 0);
     uint64_t mask = (line * (key[0] + key_len));
     out[0]++;
     out[1] ^= mask;
@@ -361,13 +368,13 @@ TEST(ArtTest, test_art_long_prefix) {
 
     // Search for the keys
     s = "this:key:has:a:long:common:prefix:1";
-    EXPECT_EQ(1, (((art_leaf *)art_search(&t, (unsigned char*)s, strlen(s)+1))->values->ids.at(0)));
+    EXPECT_EQ(1, _at(((art_leaf *)art_search(&t, (unsigned char*)s, strlen(s)+1))->values->ids, 0));
 
     s = "this:key:has:a:long:common:prefix:2";
-    EXPECT_EQ(2, (((art_leaf *)art_search(&t, (unsigned char*)s, strlen(s)+1))->values->ids.at(0)));
+    EXPECT_EQ(2, _at(((art_leaf *)art_search(&t, (unsigned char*)s, strlen(s)+1))->values->ids, 0));
 
     s = "this:key:has:a:long:prefix:3";
-    EXPECT_EQ(3, (((art_leaf *)art_search(&t, (unsigned char*)s, strlen(s)+1))->values->ids.at(0)));
+    EXPECT_EQ(3, _at(((art_leaf *)art_search(&t, (unsigned char*)s, strlen(s)+1))->values->ids, 0));
 
     const char *expected[] = {
             "this:key:has:a:long:common:prefix:1",
@@ -409,7 +416,7 @@ TEST(ArtTest, test_art_insert_search_uuid) {
         len = strlen(buf);
         buf[len-1] = '\0';
 
-        uintptr_t id = ((art_leaf*)art_search(&t, (unsigned char*)buf, len))->values->ids.at(0);
+        uintptr_t id = _at(((art_leaf*)art_search(&t, (unsigned char*)buf, len))->values->ids, 0);
         ASSERT_TRUE(line == id);
         line++;
     }
@@ -562,10 +569,10 @@ TEST(ArtTest, test_art_insert_multiple_ids_for_same_token) {
     ASSERT_TRUE(value == (art_values*) art_insert(&t, (unsigned char*)key1, strlen(key1)+1, &doc, 3));
 
     ASSERT_TRUE(art_size(&t) == 1);
-    ASSERT_EQ(value->ids.getLength(), 3);
-    ASSERT_EQ(value->ids.at(0), 1);
-    ASSERT_EQ(value->ids.at(1), 2);
-    ASSERT_EQ(value->ids.at(2), 3);
+    ASSERT_EQ(value->ids.cardinality(), 3);
+    ASSERT_EQ(_at(value->ids, 0), 1);
+    ASSERT_EQ(_at(value->ids, 1), 2);
+    ASSERT_EQ(_at(value->ids, 2), 3);
 
     res = art_tree_destroy(&t);
     ASSERT_TRUE(res == 0);
@@ -581,7 +588,7 @@ TEST(ArtTest, test_art_fuzzy_search_single_leaf) {
     ASSERT_TRUE(NULL == art_insert(&t, (unsigned char*)implement_key, strlen(implement_key)+1, &doc, 1));
 
     art_leaf* l = (art_leaf *) art_search(&t, (const unsigned char *)implement_key, strlen(implement_key)+1);
-    EXPECT_EQ(1, l->values->ids.at(0));
+    EXPECT_EQ(1, _at(l->values->ids, 0));
 
     std::vector<art_leaf*> leaves;
     art_fuzzy_search(&t, (const unsigned char *) implement_key, strlen(implement_key) + 1, 0, 0, 10, FREQUENCY, false, leaves);

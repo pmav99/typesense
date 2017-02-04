@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include <vector>
 #include "forarray.h"
+#include "roaring.hh"
 
 #define IGNORE_PRINTF 1
 
@@ -87,7 +88,7 @@ typedef struct {
  * Container for holding the documents that belong to a leaf.
  */
 typedef struct {
-    forarray ids;
+    Roaring ids;
     forarray offset_index;
     forarray offsets;
 } art_values;

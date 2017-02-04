@@ -38,7 +38,7 @@ void art_int_fuzzy_recurse(art_node *n, int depth, const unsigned char* int_str,
                            NUM_COMPARATOR comparator, std::vector<const art_leaf *> &results);
 
 bool compare_art_leaf_frequency(const art_leaf *a, const art_leaf *b) {
-    return a->values->ids.getLength() > b->values->ids.getLength();
+    return a->values->ids.cardinality() > b->values->ids.cardinality();
 }
 
 bool compare_art_leaf_score(const art_leaf *a, const art_leaf *b) {
@@ -50,14 +50,14 @@ bool compare_art_node_frequency(const art_node *a, const art_node *b) {
 
     if(IS_LEAF(a)) {
         art_leaf* al = (art_leaf *) LEAF_RAW(a);
-        a_value = al->values->ids.getLength();
+        a_value = al->values->ids.cardinality();
     } else {
         a_value = a->max_token_count;
     }
 
     if(IS_LEAF(b)) {
         art_leaf* bl = (art_leaf *) LEAF_RAW(b);
-        b_value = bl->values->ids.getLength();
+        b_value = bl->values->ids.cardinality();
     } else {
         b_value = b->max_token_count;
     }
@@ -416,7 +416,11 @@ art_leaf* art_maximum(art_tree *t) {
 
 static void add_document_to_leaf(const art_document *document, art_leaf *leaf) {
     leaf->max_score = MAX(leaf->max_score, document->score);
-    leaf->values->ids.append_sorted(document->id);
+
+    leaf->values->ids.add(document->id);
+    leaf->values->ids.runOptimize();
+    //leaf->values->ids.shrinkToFit();
+
     uint32_t curr_index = leaf->values->offsets.getLength();
     leaf->values->offset_index.append_sorted(curr_index);
 
@@ -456,7 +460,7 @@ static void copy_header(art_node *dest, art_node *src) {
 static void add_child256(art_node256 *n, art_node **ref, unsigned char c, void *child) {
     (void)ref;
     n->n.max_score = MAX(n->n.max_score, ((art_leaf *) LEAF_RAW(child))->max_score);
-    n->n.max_token_count = MAX(n->n.max_token_count, ((art_leaf *) LEAF_RAW(child))->values->ids.getLength());
+    n->n.max_token_count = MAX(n->n.max_token_count, ((art_leaf *) LEAF_RAW(child))->values->ids.cardinality());
     n->n.num_children++;
     n->children[c] = (art_node *) child;
 }
@@ -466,7 +470,7 @@ static void add_child48(art_node48 *n, art_node **ref, unsigned char c, void *ch
         int pos = 0;
         while (n->children[pos]) pos++;
         n->n.max_score = MAX(n->n.max_score, ((art_leaf *) LEAF_RAW(child))->max_score);
-        n->n.max_token_count = MAX(n->n.max_token_count, ((art_leaf *) LEAF_RAW(child))->values->ids.getLength());
+        n->n.max_token_count = MAX(n->n.max_token_count, ((art_leaf *) LEAF_RAW(child))->values->ids.cardinality());
         n->children[pos] = (art_node *) child;
         n->keys[c] = pos + 1;
         n->n.num_children++;
@@ -508,7 +512,7 @@ static void add_child16(art_node16 *n, art_node **ref, unsigned char c, void *ch
 
         // Set the child
         n->n.max_score = MAX(n->n.max_score, ((art_leaf *) LEAF_RAW(child))->max_score);
-        n->n.max_token_count = MAX(n->n.max_token_count, ((art_leaf *) LEAF_RAW(child))->values->ids.getLength());
+        n->n.max_token_count = MAX(n->n.max_token_count, ((art_leaf *) LEAF_RAW(child))->values->ids.cardinality());
         n->keys[idx] = c;
         n->children[idx] = (art_node *) child;
         n->n.num_children++;
@@ -542,7 +546,7 @@ static void add_child4(art_node4 *n, art_node **ref, unsigned char c, void *chil
                 (n->n.num_children - idx)*sizeof(void*));
 
         uint16_t child_max_score = IS_LEAF(child) ? ((art_leaf *) LEAF_RAW(child))->max_score : ((art_node *) child)->max_score;
-        uint32_t child_token_count = IS_LEAF(child) ? ((art_leaf *) LEAF_RAW(child))->values->ids.getLength() : ((art_node *) child)->max_token_count;
+        uint32_t child_token_count = IS_LEAF(child) ? ((art_leaf *) LEAF_RAW(child))->values->ids.cardinality() : ((art_node *) child)->max_token_count;
 
         n->n.max_score = MAX(n->n.max_score, child_max_score);
         n->n.max_token_count = MAX(n->n.max_token_count, child_token_count);
@@ -894,7 +898,7 @@ void* art_delete(art_tree *t, const unsigned char *key, int key_len) {
 static uint32_t get_score(art_node* child) {
     if (IS_LEAF(child)) {
         art_leaf *l = (art_leaf *) LEAF_RAW(child);
-        return l->values->ids.getLength();
+        return l->values->ids.cardinality();
     }
 
     return child->max_token_count;
